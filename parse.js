@@ -5,7 +5,7 @@ const lazyState=Symbol();
 function unlazy(s,refs){const marker=refs[lazyState];return s.includes(marker)?s.replaceAll(marker,''):s}
 const entities={amp:'&',lt:'<',gt:'>',quot:'"',apos:"'",nbsp:'\u00a0',copy:'©',reg:'®',trade:'™',ouml:'ö',AElig:'Æ',Dcaron:'Ď',frac34:'¾',HilbertSpace:'ℋ',DifferentialD:'ⅆ',ClockwiseContourIntegral:'∲',ngE:'≧̸'};
 const escapeAll=s=>s.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const escapeText=s=>s.replace(/&(?!(?:#\d{1,7}|#x[\da-f]{1,6}|[a-z][\da-z]*);)|[<>"']/gi,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const escapeText=s=>/[&<>"']/.test(s)?s.replace(/&(?!(?:#\d{1,7}|#x[\da-f]{1,6}|[a-z][\da-z]*);)|[<>"']/gi,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])):s;
 const unescape=s=>s.includes('\\')?s.replace(/\\([!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~])/g,'$1'):s;
 const decode=s=>s.replace(/&(#x[\da-f]+|#\d+|\w+);/gi,(a,b)=>{if(b[0]!=='#')return entities[b]??a;let n=b[1].toLowerCase()==='x'?parseInt(b.slice(2),16):+b.slice(1);return n>0&&n<=0x10ffff?String.fromCodePoint(n):'�'});
 const key=s=>s.trim().replace(/\s+/g,' ').toLowerCase().replace(/ß/g,'ss');
@@ -23,10 +23,13 @@ function linkSpec(s,pos){
 }
 // Jump over ordinary prose in one search instead of allocating a token per word.
 const nextPlain=/[&\\`<\[!*_~\n]|(?:https?|ftp):\/\/|www\.|(?:mailto:|xmpp:)?[a-z\d][a-z\d._+-]*@/gi;
+const nextNoEmail=/[&\\`<\[!*_~\n]|(?:https?|ftp):\/\/|www\./gi;
 const nextLiteral=/[&\\`<\[!*_~\n]/g;
 // Links and code are atomic; emphasis delimiters are paired after scanning.
 function inline(s,refs,noLinks=false,tracker={},bare=true){
+ const hasEmail=s.includes('@'),plainSearch=hasEmail?nextPlain:(s.includes('://')||/www\./i.test(s)?nextNoEmail:nextLiteral);
  let tokens=[],delims=[],i=0,inAnchor=noLinks||!!refs[anchorState];
+ const probe=bare&&!inAnchor?plainSearch:nextLiteral;probe.lastIndex=0;if(!probe.test(s)){refs[anchorState]=inAnchor;return escapeText(s)}
  let masks=[];if(s.includes('[')&&s.includes('`')){let p=0;while((p=s.indexOf('`',p))>=0){let back=0;for(let b=p-1;b>=0&&s[b]==='\\';b--)back++;if(back%2){p++;continue}let n=1;while(s[p+n]==='`')n++;let e=p+n,found=-1;while((e=s.indexOf('`',e))>=0){let k=1;while(s[e+k]==='`')k++;if(k===n){found=e;break}e+=k}if(found>=0){masks.push([p,found+n]);p=found+n}else p+=n}}
  const add=x=>{if(x)tokens.push({text:x})};
  while(i<s.length){let c=s[i],m;
@@ -55,12 +58,12 @@ function inline(s,refs,noLinks=false,tracker={},bare=true){
    let d={text:c.repeat(n),char:c,n,originalN:n,index:i,open:c==='_'?left&&(!right||punct(before)):left,close:c==='_'?right&&(!left||punct(after)):right,pre:'',post:''};if(c==='_'&&n===1&&(after===']'||/\[[^\]]*$/.test(s.slice(0,i)))&&s[i-1]==='`'&&/(`{2,})([^]*?)\1$/.test(s.slice(0,i))){let z=/(`{2,})([^]*?)\1$/.exec(s.slice(0,i));if(z[2].includes('`'))d.close=false}tokens.push(d);delims.push(d);i+=n;continue;
   }
   if(c==='\n'){let count=0;for(let j=tokens.length-1;j>=0;j--){let t=tokens[j];if(t.char)break;let m=/ +$/.exec(t.text);if(!m)break;count+=m[0].length;if(m[0].length!==t.text.length)break}if(count>=2){let remaining=count;for(let j=tokens.length-1;j>=0&&remaining;j--){let t=tokens[j],n=Math.min(remaining,(/ +$/.exec(t.text)||[''])[0].length);t.text=t.text.slice(0,t.text.length-n);remaining-=n}add('<br>');i++;while(s[i]===' '||s[i]==='\t')i++}else{add('\n');i++}continue}
-  if(bare&&!inAnchor && (c==='h'||c==='f'||c==='w'||/[a-z\d]/i.test(c))){
+  if(bare&&!inAnchor && ((hasEmail||c==='h'||c==='H'||c==='f'||c==='F'||c==='w'||c==='W')&&/[a-z\d]/i.test(c))){
    let tail=s.slice(i);m=/^(?:mailto:|xmpp:)[a-z\d._+-]+@[a-z\d-]+(?:\.[a-z\d-]+)+(?:\/[a-z\d@._+-]+)?/i.exec(tail);if(m&&!/[-_]$/.test(m[0])&&!/^[_-]/.test(tail.slice(m[0].length))){let u=m[0].replace(/\.+$/,'');add('<a href="'+escapeText(u)+'">'+escapeText(u)+'</a>');i+=u.length;continue}m=/^(?:(?:https?|ftp):\/\/|www\.)(?:[^\s<>]+)/i.exec(tail);
    if(m&&(i===0||!/[\w]/.test(s[i-1]))&&(!/^www\./i.test(m[0])||m[0].startsWith('www.'))){let u=m[0];u=u.replace(/&(?:#\d+|#x[\da-f]+|[a-z]+);$/i,'');let br=u.indexOf('](');if(br>=0&&/^https?:/.test(u.slice(br+2))&&!u.endsWith(')'))u=u.slice(0,br+1);while(/[?!.,:;*_~]$/.test(u))u=u.slice(0,-1);let bal=u.includes('(')?u.slice(u.indexOf('(')):u;let close=(bal.match(/\)/g)||[]).length,open=(bal.match(/\(/g)||[]).length;while(close>open&&u.endsWith(')')){u=u.slice(0,-1);close--}while(/[?!.,:;*_~]$/.test(u)|| (u.endsWith(')')&&((u.includes('(')?u.slice(u.indexOf('(')):u).match(/\)/g)||[]).length>(u.match(/\(/g)||[]).length))u=u.slice(0,-1);u=u.replace(/&(?:#\d{1,7}|#x[\da-f]{1,6}|[a-z]+);$/i,'');if(u){let dest=href((u.startsWith('www.')?'http://':'')+u);add('<a href="'+escapeText(dest??u)+'">'+escapeText(u)+'</a>');i+=u.length;continue}}
    m=/^[a-z\d][a-z\d._+-]*@[a-z\d-]+(?:\.[a-z\d-]+)*\.[a-z]+(?![a-z\d-]|\.[a-z\d])/i.exec(tail);if(m&&(tail[m[0].length]!=='_'||delims.some(d=>d.char==='_'&&d.open&&d.n))&&(i===0||!/[\w.+-]/.test(s[i-1]))){add('<a href="mailto:'+escapeText(m[0])+'">'+escapeText(m[0])+'</a>');i+=m[0].length;continue}
   }
-  const search=bare&&!inAnchor?nextPlain:nextLiteral;search.lastIndex=i+1;let next=search.exec(s);let p=next?next.index:s.length;
+  const search=bare&&!inAnchor?plainSearch:nextLiteral;search.lastIndex=i+1;let next=search.exec(s);let p=next?next.index:s.length;
   add(escapeText(s.slice(i,p)));i=p;
  }
  for(let j=0;j<delims.length;j++){let closer=delims[j];if(!closer.close)continue;for(let k=j-1;k>=0&&closer.n;k--){let op=delims[k];if(!op.open||op.char!==closer.char||!op.n)continue;if(closer.char==='~'&&op.n!==closer.n)continue;if(closer.char!=='~'&&(op.close||closer.open)&&(op.n+closer.n)%3===0&&(op.n%3||closer.n%3))continue;if(op.n===2&&closer.n===1&&op.nested&&delims.slice(j+1).some(d=>d.char===op.char&&d.close&&d.n>=2))continue;let n=closer.char==='~'?closer.n:Math.min(op.n,closer.n)>=2?2:1,tag=closer.char==='~'?'del':n===2?'strong':'em';for(let q=0;q<k;q++)if(delims[q].char===op.char&&delims[q].n)delims[q].nested=true;op.n-=n;closer.n-=n;if(n===2&&closer.originalN===2&&closer.open&&closer.char!=='~'&&white(s[op.index-1])){for(let q=0;q<k;q++)if(delims[q].char===closer.char&&delims[q].n===1)delims[q].open=false}op.post='<'+tag+'>'+op.post;if(closer.n===1&&n===2&&op.nested&&!delims.slice(0,k).some(d=>d.char===op.char&&d.open&&d.n)){closer.pre+=closer.char;closer.n=0}closer.pre+='</'+tag+'>';for(let q=k+1;q<j;q++){delims[q].open=false;delims[q].close=false}if(op.n)k++}}
@@ -78,7 +81,7 @@ function splitCells(l){l=l.trim();if(l[0]==='|')l=l.slice(1);if(l.endsWith('|')&
 function tableAlign(l){if(!l.includes('|')||/^ {4}/.test(l))return null;let a=splitCells(l);return a.every(x=>/^:?-+:?$/.test(x))?a.map(x=>x[0]===':'?(x.endsWith(':')?'center':'left'):x.endsWith(':')?'right':null):null}
 function lazyEnd(ns,code=true){let n=ns.at(-1);if(!n)return false;if(n.type==='quote')return lazyEnd(n.children,code);if(n.type==='list')return lazyEnd(n.items.at(-1).children,code);return n.type==='paragraph'||(code&&n.type==='code'&&n.fenced&&!!n.text)}
 function validFence(l){let m=fence(l);return m&&!(m[1][0]==='`'&&m[2].includes('`'))}
-function expand(l,limit=Infinity){let out='',col=0,i=0;for(;i<l.length;i++){let c=l[i];if(c!==' '&&c!=='\t'&&c!=='>'&&c!=='-'&&c!=='+'&&c!=='*'&&!/[\d.)]/.test(c))break;if(col>=limit)break;let n=c==='\t'?4-col%4:1;out+=c==='\t'?' '.repeat(n):c;col+=n}return out+l.slice(i)}
+function expand(l,limit=Infinity){if(!l.includes('\t'))return l;let out='',col=0,i=0;for(;i<l.length;i++){let c=l[i];if(c!==' '&&c!=='\t'&&c!=='>'&&c!=='-'&&c!=='+'&&c!=='*'&&!/[\d.)]/.test(c))break;if(col>=limit)break;let n=c==='\t'?4-col%4:1;out+=c==='\t'?' '.repeat(n):c;col+=n}return out+l.slice(i)}
 // Recursive containers retain source positions for list looseness. Inline work
 // is deferred so that forward reference definitions are available everywhere.
 function blocks(lines,refs,quote=false,inList=false){let result=[],i=0,bi=0;const push=n=>{n.sourceStart=bi;n.sourceEnd=i;while(n.sourceEnd>n.sourceStart&&!lines[n.sourceEnd-1].trim())n.sourceEnd--;result.push(n)};
